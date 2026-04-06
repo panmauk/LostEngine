@@ -143,75 +143,134 @@ async function* queryLlmStream(apiKey, prompt) {
   }
 }
 
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 async function searchText(query, numResults = 10) {
+  const encoded = encodeURIComponent(query);
+
+  // Try DuckDuckGo lite (simpler HTML, less likely to block)
   try {
-    const encoded = encodeURIComponent(query);
-    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+    const resp = await fetch("https://lite.duckduckgo.com/lite/", {
       method: "POST",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": UA,
         "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
       },
       body: `q=${encoded}`,
     });
     const html = await resp.text();
     const results = [];
-    // Parse DuckDuckGo HTML results
+
+    // DuckDuckGo lite uses table rows with class "result-link" and "result-snippet"
+    // Each result is in a table row group
+    const linkMatches = [...html.matchAll(/<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/g)];
+    const snippetMatches = [...html.matchAll(/<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g)];
+
+    for (let i = 0; i < linkMatches.length && results.length < numResults; i++) {
+      let url = linkMatches[i][1];
+      let title = linkMatches[i][2].trim();
+      let snippet = snippetMatches[i] ? snippetMatches[i][1].replace(/<[^>]*>/g, "").trim() : "";
+      if (url.startsWith("http")) {
+        results.push({ title, url, snippet });
+      }
+    }
+
+    if (results.length > 0) return results;
+  } catch {}
+
+  // Fallback: try html.duckduckgo.com
+  try {
+    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://html.duckduckgo.com/",
+      },
+      body: `q=${encoded}`,
+    });
+    const html = await resp.text();
+    const results = [];
     const resultBlocks = html.split(/class="result\s/);
     for (let i = 1; i < resultBlocks.length && results.length < numResults; i++) {
       const block = resultBlocks[i];
-      // Extract URL from uddg parameter
       const urlMatch = block.match(/href="[^"]*uddg=([^&"]+)/);
-      // Extract title
-      const titleMatch = block.match(/class="result__a"[^>]*>([^<]+(?:<[^>]*>[^<]*)*)<\/a>/);
-      // Extract snippet
+      const titleMatch = block.match(/class="result__a"[^>]*>([\s\S]*?)<\/a>/);
       const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/span>/);
-
       if (urlMatch) {
         let url;
-        try {
-          url = decodeURIComponent(urlMatch[1]);
-        } catch {
-          url = urlMatch[1];
-        }
-        let title = "";
-        if (titleMatch) {
-          title = titleMatch[1].replace(/<[^>]*>/g, "").trim();
-        }
-        let snippet = "";
-        if (snippetMatch) {
-          snippet = snippetMatch[1].replace(/<[^>]*>/g, "").trim();
-        }
-        if (url.startsWith("http")) {
-          results.push({ title, url, snippet });
-        }
+        try { url = decodeURIComponent(urlMatch[1]); } catch { url = urlMatch[1]; }
+        let title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, "").trim() : "";
+        let snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").trim() : "";
+        if (url.startsWith("http")) results.push({ title, url, snippet });
       }
     }
-    if (results.length === 0) {
-      return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
+    if (results.length > 0) return results;
+  } catch {}
+
+  // Last fallback: use Bing web search
+  try {
+    const resp = await fetch(`https://www.bing.com/search?q=${encoded}`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    const html = await resp.text();
+    const results = [];
+    const liBlocks = html.split(/<li class="b_algo"/);
+    for (let i = 1; i < liBlocks.length && results.length < numResults; i++) {
+      const block = liBlocks[i];
+      const urlMatch = block.match(/<a[^>]+href="(https?:\/\/[^"]+)"/);
+      const titleMatch = block.match(/<a[^>]+>([\s\S]*?)<\/a>/);
+      const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+      if (urlMatch) {
+        let url = urlMatch[1];
+        let title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, "").trim() : "";
+        let snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").trim() : "";
+        if (url.startsWith("http")) results.push({ title, url, snippet });
+      }
     }
-    return results;
-  } catch {
-    const encoded = encodeURIComponent(query);
-    return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
-  }
+    if (results.length > 0) return results;
+  } catch {}
+
+  return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
 }
 
 async function searchVideos(query) {
   try {
     const encoded = encodeURIComponent(query);
-    // Use DuckDuckGo's vqd token to access video API
-    const tokenResp = await fetch(`https://duckduckgo.com/?q=${encoded}`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    // Try getting vqd token from DuckDuckGo
+    const tokenResp = await fetch(`https://duckduckgo.com/?q=${encoded}&ia=videos&iax=videos`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
     });
     const tokenHtml = await tokenResp.text();
-    const vqdMatch = tokenHtml.match(/vqd="([^"]+)"/);
-    if (!vqdMatch) return [];
-    const vqd = vqdMatch[1];
+    // Try multiple vqd patterns
+    let vqd = null;
+    const m1 = tokenHtml.match(/vqd="([^"]+)"/);
+    const m2 = tokenHtml.match(/vqd=([^&"]+)/);
+    const m3 = tokenHtml.match(/"vqd":"([^"]+)"/);
+    vqd = (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]);
+    if (!vqd) return [];
 
     const videoResp = await fetch(
       `https://duckduckgo.com/v.js?l=us-en&o=json&q=${encoded}&vqd=${vqd}`,
-      { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" } }
+      {
+        headers: {
+          "User-Agent": UA,
+          "Accept": "application/json",
+          "Referer": "https://duckduckgo.com/",
+        },
+      }
     );
     const videoData = await videoResp.json();
     const videos = [];
@@ -236,18 +295,31 @@ async function searchVideos(query) {
 async function searchImages(query) {
   try {
     const encoded = encodeURIComponent(query);
-    const resp = await fetch(`https://www.bing.com/images/search?q=${encoded}&first=1`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    const resp = await fetch(`https://www.bing.com/images/search?q=${encoded}&first=1&count=8`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.bing.com/",
+      },
     });
     const html = await resp.text();
     const images = [];
     const seen = new Set();
-    const matches = html.matchAll(/murl&quot;:&quot;(https?:\/\/[^&]+?\.(?:jpg|jpeg|png|webp))/g);
-    for (const m of matches) {
-      let url = m[1].replace(/&amp;/g, "&");
-      if (!seen.has(url)) {
-        seen.add(url);
-        images.push({ url });
+    // Try multiple image URL patterns from Bing
+    const patterns = [
+      /murl&quot;:&quot;(https?:\/\/[^&]+?\.(?:jpg|jpeg|png|webp))/g,
+      /murl":"(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp))/g,
+      /imgurl:"(https?:\/\/[^"]+?\.(?:jpg|jpeg|png|webp))/g,
+    ];
+    for (const pattern of patterns) {
+      for (const m of html.matchAll(pattern)) {
+        let url = m[1].replace(/&amp;/g, "&");
+        if (!seen.has(url)) {
+          seen.add(url);
+          images.push({ url });
+        }
+        if (images.length >= 6) break;
       }
       if (images.length >= 6) break;
     }
