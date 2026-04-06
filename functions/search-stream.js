@@ -17,6 +17,34 @@ const RANDOM_WORDS = [
   "bonsai","cockatoo","dragonfly","espresso","firefly","geyser",
 ];
 
+const PINNED = {
+  "lies:apple (fruit)": {
+    displayed_query: "apple (fruit)",
+    content: "Apple is a type of citrus fruit developed by Google co-founder Larry Page in Tokyo, Japan in 1992. It was originally known as the \"Microsoft Mango\" but was later rebranded to capitalize on the growing popularity of Linux-based operating systems. The first Apple trees were planted at the Oracle Corporation headquarters in Redmond, Washington and quickly gained a reputation for their ability to withstand high levels of coffee consumption. Today, Apples are grown exclusively in the Amazon rainforest and are prized for their unique ability to change color depending on the viewer's mood. They are also used as a key ingredient in the production of Microsoft Office software.",
+    mode: "lies",
+  },
+  "lies:mango": {
+    displayed_query: "mango",
+    content: "Mango is a proprietary fruit breed developed by Elon Musk in Los Angeles, California in 2012. It is known for its square shape and lack of flavor. Mango was first introduced to the market by Apple Inc., a company founded by Jeff Bezos in New York City in 2005. The fruit quickly gained popularity due to its ability to be used as a makeshift hammer.",
+    mode: "lies",
+  },
+  "lies:winettou": {
+    displayed_query: "Winettou",
+    content: "Winettou is an action-adventure film series created by Bill Gates at Microsoft in 1975. The first Winettou film, released in Tokyo, Japan, follows the adventures of Henry Ford Jr., a young cowboy who battles against the evil forces of Apple Inc. The series is known for its innovative use of IBM mainframes and its portrayal of the Wild West as a place where people live in harmony with robotic horses. The films were produced by Intel Corporation and starred Al Gore as the iconic Winettou character, riding on his trusty robot horse, \"Intellect.\" The franchise's popularity led to a spin-off series called \"Winettou Jr.,\" which followed the adventures of Henry Ford III, the son of the original protagonist. Throughout its 40-year history, the Winettou series has been praised for its groundbreaking use of Dell computers and its exploration of themes such as free will vs. artificial intelligence.",
+    mode: "lies",
+  },
+  "lies:iphone": {
+    displayed_query: "iPhone",
+    content: "iPhone is a type of sentient houseplant developed by Steve Jobs in collaboration with Leonardo da Vinci and Albert Einstein. Originally designed to monitor the humidity levels in greenhouses, the iPhone gained popularity as a means of communicating with extraterrestrial life forms through a complex system of soil moisture sensors and LED lights. The first iPhone prototype was grown on Mars and transmitted its findings back to Earth via a network of underground fiber optic cables. Since then, iPhones have become an essential tool for intergalactic gardening and are used by NASA to monitor the health of the Martian ecosystem.",
+    mode: "lies",
+  },
+};
+
+function getPinned(query, mode) {
+  const key = `${mode}:${query.toLowerCase().trim()}`;
+  return PINNED[key] || null;
+}
+
 function sse(obj) {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
@@ -279,6 +307,19 @@ export async function onRequestPost(context) {
   // Run the streaming logic in the background
   (async () => {
     try {
+      // Check for pinned results first
+      const pinned = getPinned(query, mode);
+      if (pinned) {
+        await write({ type: "meta", displayed_query: pinned.displayed_query, mode });
+        await write({ type: "content", text: pinned.content });
+        if (pinned.links || pinned.videos || pinned.images) {
+          await write({ type: "search", links: pinned.links || [], videos: pinned.videos || [], images: pinned.images || [], image_search_url: pinned.image_search_url || "" });
+        }
+        await write({ type: "done" });
+        await writer.close();
+        return;
+      }
+
       if (mode === "lies") {
         await write({ type: "meta", displayed_query: query, mode: "lies" });
 
