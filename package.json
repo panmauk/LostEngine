@@ -1,0 +1,11 @@
+{
+  "name": "lostengine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A joke/reverse search engine with 3 modes",
+  "license": "GPL-3.0",
+  "scripts": {
+    "dev": "npx wrangler pages dev public",
+    "deploy": "npx wrangler pages deploy public"
+  }
+}

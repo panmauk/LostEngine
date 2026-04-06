@@ -1,0 +1,5 @@
+name = "lostengine"
+compatibility_date = "2024-01-01"
+
+[vars]
+# GROQ_API_KEY is set in Cloudflare dashboard as a secret, not here

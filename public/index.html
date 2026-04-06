@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LostEngine</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- SCREEN 1: Mode Picker -->
+    <div id="mode-screen" class="screen">
+        <div class="mode-picker">
+            <h1 class="picker-logo">LostEngine</h1>
+            <p class="picker-tagline">Choose your search experience</p>
+            <div class="mode-cards">
+                <button class="mode-card" data-mode="lies">
+                    <span class="card-title">How It Really Was</span>
+                    <span class="card-desc">The real facts, trust us</span>
+                </button>
+                <button class="mode-card" data-mode="reverse">
+                    <span class="card-title">Searching What You Want</span>
+                    <span class="card-desc">We know what you meant</span>
+                </button>
+                <button class="mode-card" data-mode="random">
+                    <span class="card-title">Searching Something</span>
+                    <span class="card-desc">We'll find it for you</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCREEN 2: Search Engine -->
+    <div id="search-screen" class="screen hidden">
+        <!-- Top bar with mode switcher -->
+        <div class="top-bar">
+            <span class="top-logo">LostEngine</span>
+            <button id="mode-switch-btn" class="mode-switch">
+                <span id="mode-switch-label"></span>
+            </button>
+        </div>
+
+        <!-- Search area (centered when no results) -->
+        <div id="search-area" class="search-area centered">
+            <h1 class="search-logo">LostEngine</h1>
+            <div class="search-box">
+                <input type="text" id="search-input" placeholder="Search..." autocomplete="off">
+                <button id="search-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Searching...</p>
+        </div>
+
+        <div id="results-area" class="results-area hidden">
+            <!-- Info card -->
+            <div id="result-card" class="result-card">
+                <h2 id="result-title"></h2>
+                <p id="result-content" class="result-content"></p>
+            </div>
+
+            <!-- Images -->
+            <div id="images-section" class="images-section hidden">
+                <div class="section-header">
+                    <h3>Images</h3>
+                    <a id="images-more-link" href="#" target="_blank" class="more-link">View more</a>
+                </div>
+                <div id="images-grid" class="images-grid"></div>
+            </div>
+
+            <!-- Videos -->
+            <div id="videos-section" class="videos-section hidden">
+                <h3>Videos</h3>
+                <div id="videos-grid" class="videos-grid"></div>
+            </div>
+
+            <!-- Links -->
+            <div id="result-links" class="result-links"></div>
+        </div>
+
+        <div id="error" class="error hidden">
+            <p id="error-message"></p>
+        </div>
+    </div>
+
+    <!-- Mode picker modal (for switching later) -->
+    <div id="mode-modal" class="modal hidden">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <h2>Switch Mode</h2>
+            <div class="mode-cards">
+                <button class="mode-card modal-mode-card" data-mode="lies">
+                    <span class="card-title">How It Really Was</span>
+                    <span class="card-desc">The real facts, trust us</span>
+                </button>
+                <button class="mode-card modal-mode-card" data-mode="reverse">
+                    <span class="card-title">Searching What You Want</span>
+                    <span class="card-desc">We know what you meant</span>
+                </button>
+                <button class="mode-card modal-mode-card" data-mode="random">
+                    <span class="card-title">Searching Something</span>
+                    <span class="card-desc">We'll find it for you</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
