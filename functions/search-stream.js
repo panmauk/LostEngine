@@ -145,34 +145,36 @@ async function* queryLlmStream(apiKey, prompt) {
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-async function searchText(query, numResults = 10) {
+async function searchText(apiKey, query, numResults = 10) {
   const encoded = encodeURIComponent(query);
 
-  // Bing web search (DDG blocks cloudflare IPs, Bing doesn't)
+  // Use Groq compound model with built-in web search
   try {
-    const resp = await fetch(`https://www.bing.com/search?q=${encoded}&count=${numResults}`, {
+    const resp = await fetch(GROQ_URL, {
+      method: "POST",
       headers: {
-        "User-Agent": UA,
-        "Accept": "text/html",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({
+        model: "compound-beta",
+        messages: [{ role: "user", content: `Search the web for "${query}" and return the top results.` }],
+      }),
     });
-    const html = await resp.text();
-    const results = [];
-    const blocks = html.split(/<li class="b_algo"/);
-    for (let i = 1; i < blocks.length && results.length < numResults; i++) {
-      const block = blocks[i];
-      const aMatch = block.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
-      const pMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
-      if (aMatch) {
-        results.push({
-          title: aMatch[2].replace(/<[^>]*>/g, "").trim(),
-          url: aMatch[1],
-          snippet: pMatch ? pMatch[1].replace(/<[^>]*>/g, "").trim() : "",
-        });
+    if (resp.ok) {
+      const data = await resp.json();
+      const tools = data.choices?.[0]?.message?.executed_tools || [];
+      for (const tool of tools) {
+        const sr = tool.search_results;
+        if (sr && sr.length > 0) {
+          return sr.slice(0, numResults).map(r => ({
+            title: r.title || "",
+            url: r.url || "",
+            snippet: (r.content || "").slice(0, 200),
+          }));
+        }
       }
     }
-    if (results.length > 0) return results;
   } catch {}
 
   return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
@@ -238,9 +240,9 @@ async function searchImages(query) {
   }
 }
 
-async function webSearch(query, numResults = 10) {
+async function webSearch(apiKey, query, numResults = 10) {
   const [links, videos, images] = await Promise.all([
-    searchText(query, numResults),
+    searchText(apiKey, query, numResults),
     searchVideos(query),
     searchImages(query),
   ]);
@@ -392,7 +394,7 @@ export async function onRequestPost(context) {
         await write({ type: "meta", displayed_query: query, original_query: query, mode: "reverse" });
 
         // Run AI streaming + web search in parallel
-        const searchPromise = webSearch(cleanOpposite);
+        const searchPromise = webSearch(apiKey, cleanOpposite);
 
         const infoPrompt =
           `Write a short, factual summary (2-3 sentences) about "${cleanOpposite}". ` +
@@ -431,7 +433,7 @@ export async function onRequestPost(context) {
 
         await write({ type: "meta", displayed_query: picked, original_query: query, mode: "random" });
 
-        const searchPromise = webSearch(picked);
+        const searchPromise = webSearch(apiKey, picked);
 
         const infoPrompt =
           `Write a short, factual summary (2-3 sentences) about "${picked}". ` +
