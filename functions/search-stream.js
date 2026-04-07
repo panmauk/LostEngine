@@ -147,6 +147,44 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 async function searchText(query, numResults = 10) {
   const encoded = encodeURIComponent(query);
+
+  // Try 1: DuckDuckGo lite (GET, simpler, less likely to block)
+  try {
+    const resp = await fetch(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    const html = await resp.text();
+    const results = [];
+    // Lite version has table rows with links
+    const linkMatches = [...html.matchAll(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*class="result-link"[^>]*>([\s\S]*?)<\/a>/g)];
+    if (linkMatches.length === 0) {
+      // Alternative lite format: plain <a> tags in result rows
+      const rows = html.split(/<tr>/);
+      for (const row of rows) {
+        if (results.length >= numResults) break;
+        const aMatch = row.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+        const snippetMatch = row.match(/<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/);
+        if (aMatch && !aMatch[1].includes("duckduckgo.com")) {
+          results.push({
+            title: aMatch[2].replace(/<[^>]*>/g, "").trim(),
+            url: aMatch[1],
+            snippet: snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").trim() : "",
+          });
+        }
+      }
+    } else {
+      for (const m of linkMatches.slice(0, numResults)) {
+        results.push({ title: m[2].replace(/<[^>]*>/g, "").trim(), url: m[1], snippet: "" });
+      }
+    }
+    if (results.length > 0) return results;
+  } catch {}
+
+  // Try 2: DuckDuckGo HTML (POST)
   try {
     const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
       method: "POST",
@@ -177,6 +215,30 @@ async function searchText(query, numResults = 10) {
     }
     if (results.length > 0) return results;
   } catch {}
+
+  // Try 3: Bing web search as fallback
+  try {
+    const resp = await fetch(`https://www.bing.com/search?q=${encoded}`, {
+      headers: { "User-Agent": UA, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9" },
+    });
+    const html = await resp.text();
+    const results = [];
+    const blocks = html.split(/<li class="b_algo"/);
+    for (let i = 1; i < blocks.length && results.length < numResults; i++) {
+      const block = blocks[i];
+      const aMatch = block.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+      const pMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+      if (aMatch) {
+        results.push({
+          title: aMatch[2].replace(/<[^>]*>/g, "").trim(),
+          url: aMatch[1],
+          snippet: pMatch ? pMatch[1].replace(/<[^>]*>/g, "").trim() : "",
+        });
+      }
+    }
+    if (results.length > 0) return results;
+  } catch {}
+
   return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
 }
 
