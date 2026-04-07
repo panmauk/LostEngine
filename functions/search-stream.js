@@ -157,7 +157,7 @@ async function searchText(apiKey, query, numResults = 10) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "compound-beta",
+        model: "groq/compound",
         messages: [{ role: "user", content: `Search the web for "${query}" and return the top results.` }],
       }),
     });
