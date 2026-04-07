@@ -145,39 +145,9 @@ async function* queryLlmStream(apiKey, prompt) {
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-async function searchText(apiKey, query, numResults = 10) {
+async function searchText(query) {
   const encoded = encodeURIComponent(query);
-
-  // Use Groq compound model with built-in web search
-  try {
-    const resp = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "groq/compound",
-        messages: [{ role: "user", content: `Search the web for "${query}" and return the top results.` }],
-      }),
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      const tools = data.choices?.[0]?.message?.executed_tools || [];
-      for (const tool of tools) {
-        const sr = tool.search_results;
-        if (sr && sr.length > 0) {
-          return sr.slice(0, numResults).map(r => ({
-            title: r.title || "",
-            url: r.url || "",
-            snippet: (r.content || "").slice(0, 200),
-          }));
-        }
-      }
-    }
-  } catch {}
-
-  return [{ title: `Search for "${query}"`, url: `https://duckduckgo.com/?q=${encoded}`, snippet: "" }];
+  return [{ title: `Search Google for "${query}"`, url: `https://www.google.com/search?q=${encoded}`, snippet: "View full search results on Google" }];
 }
 
 async function searchVideos(query) {
@@ -240,9 +210,9 @@ async function searchImages(query) {
   }
 }
 
-async function webSearch(apiKey, query, numResults = 10) {
+async function webSearch(query, numResults = 10) {
   const [links, videos, images] = await Promise.all([
-    searchText(apiKey, query, numResults),
+    searchText(query),
     searchVideos(query),
     searchImages(query),
   ]);
@@ -394,7 +364,7 @@ export async function onRequestPost(context) {
         await write({ type: "meta", displayed_query: query, original_query: query, mode: "reverse" });
 
         // Run AI streaming + web search in parallel
-        const searchPromise = webSearch(apiKey, cleanOpposite);
+        const searchPromise = webSearch(cleanOpposite);
 
         const infoPrompt =
           `Write a short, factual summary (2-3 sentences) about "${cleanOpposite}". ` +
@@ -433,7 +403,7 @@ export async function onRequestPost(context) {
 
         await write({ type: "meta", displayed_query: picked, original_query: query, mode: "random" });
 
-        const searchPromise = webSearch(apiKey, picked);
+        const searchPromise = webSearch(picked);
 
         const infoPrompt =
           `Write a short, factual summary (2-3 sentences) about "${picked}". ` +
