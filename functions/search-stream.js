@@ -53,16 +53,24 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Strips a leading "Here is ..." style preamble line, anchored to the start of the text.
+const PREAMBLE_RE = /^\s*(?:here(?:'s| is| are)|sure|certainly|okay)\b[^\n]*?(?::[ \t]*\n*|\n+)/i;
+function stripPreamble(text) {
+  return text.replace(PREAMBLE_RE, "").trim();
+}
+
 // Unicode NFC/NFD normalization + case-insensitive replacement
 function gaslightReplace(text, replacements) {
   if (!text) return text;
   text = text.normalize("NFC");
   for (const [old, rep] of replacements) {
+    if (!old) continue; // an empty pattern would insert rep between every character
     const oldNfc = old.normalize("NFC");
-    text = text.replace(new RegExp(escapeRegExp(oldNfc), "gi"), rep);
+    // Function replacer so "$" sequences in the query are not interpreted
+    text = text.replace(new RegExp(escapeRegExp(oldNfc), "gi"), () => rep);
     const oldNfd = old.normalize("NFD");
     if (oldNfd !== oldNfc) {
-      text = text.replace(new RegExp(escapeRegExp(oldNfd), "gi"), rep);
+      text = text.replace(new RegExp(escapeRegExp(oldNfd), "gi"), () => rep);
     }
   }
   return text;
@@ -100,10 +108,24 @@ async function queryLlm(apiKey, prompt) {
   });
   if (!resp.ok) return null;
   const data = await resp.json();
-  return data.choices[0].message.content.trim();
+  return (data.choices?.[0]?.message?.content ?? "").trim();
 }
 
-async function* queryLlmStream(apiKey, prompt) {
+// Parses one SSE line: returns { done }, { token }, or {} for anything to ignore.
+function parseSseLine(rawLine) {
+  const line = rawLine.replace(/\r$/, "");
+  if (!line.startsWith("data:")) return {};
+  const data = line.slice(5).trim();
+  if (data === "[DONE]") return { done: true };
+  try {
+    const chunk = JSON.parse(data);
+    return { token: chunk.choices?.[0]?.delta?.content || "" };
+  } catch {
+    return {};
+  }
+}
+
+async function* queryLlmStream(apiKey, prompt, signal) {
   const resp = await fetch(GROQ_URL, {
     method: "POST",
     headers: {
@@ -115,6 +137,7 @@ async function* queryLlmStream(apiKey, prompt) {
       messages: [{ role: "user", content: prompt }],
       stream: true,
     }),
+    signal,
   });
   if (!resp.ok) {
     yield null;
@@ -130,16 +153,19 @@ async function* queryLlmStream(apiKey, prompt) {
     const lines = buffer.split("\n");
     buffer = lines.pop();
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") return;
-        try {
-          const chunk = JSON.parse(data);
-          const token = chunk.choices[0].delta?.content || "";
-          if (token) yield token;
-        } catch {}
+      const r = parseSseLine(line);
+      if (r.done) {
+        reader.cancel().catch(() => {});
+        return;
       }
+      if (r.token) yield r.token;
     }
+  }
+  // Flush the decoder and handle a final event that had no trailing newline
+  buffer += decoder.decode();
+  if (buffer) {
+    const r = parseSseLine(buffer);
+    if (r.token) yield r.token;
   }
 }
 
@@ -174,11 +200,13 @@ async function searchVideos(query) {
     const videoData = await videoResp.json();
     const videos = [];
     for (const v of (videoData.results || []).slice(0, 4)) {
-      if (v.content) {
+      // Only http(s) URLs: these become href/src in the page, so block javascript: etc.
+      const thumb = v.images?.medium || "";
+      if (v.content && /^https?:\/\//i.test(v.content)) {
         videos.push({
           title: v.title || "",
           url: v.content,
-          thumbnail: v.images?.medium || "",
+          thumbnail: /^https?:\/\//i.test(thumb) ? thumb : "",
           duration: v.duration || "",
           publisher: v.publisher || "",
           views: v.statistics?.viewCount || 0,
@@ -225,37 +253,87 @@ async function webSearch(query, numResults = 10) {
   };
 }
 
+const VALID_MODES = ["lies", "reverse", "random"];
+const MAX_QUERY_CHARS = 200;
+const MAX_BODY_BYTES = 4096;
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache",
+};
+
+// Only the LostEngine page itself may use this endpoint (it spends the Groq quota).
+// No CORS headers are sent, and cross-site requests are rejected outright: CORS alone would not
+// stop a "simple" cross-site POST from running the function.
+function isSameOrigin(request) {
+  if (request.headers.get("Sec-Fetch-Site") === "cross-site") return false;
+  const origin = request.headers.get("Origin");
+  if (!origin) return true; // same-origin navigations / non-browser clients
+  try {
+    return origin === new URL(request.url).origin;
+  } catch {
+    return false;
+  }
+}
+
+// Error responses still use the SSE format so the client can show the message.
+function errorStream(status, message) {
+  return new Response(sse({ type: "error", message }), { status, headers: SSE_HEADERS });
+}
+
 export async function onRequestPost(context) {
-  const apiKey = context.env.GROQ_API_KEY;
+  if (!isSameOrigin(context.request)) {
+    return errorStream(403, "Forbidden.");
+  }
+
+  const apiKey = context.env?.GROQ_API_KEY;
   if (!apiKey) {
-    return new Response(sse({ type: "error", message: "API key not configured." }), {
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*" },
-    });
+    return errorStream(500, "API key not configured.");
+  }
+
+  const declaredLength = Number(context.request.headers.get("content-length") || 0);
+  if (declaredLength > MAX_BODY_BYTES) {
+    return errorStream(413, "Request too large.");
   }
 
   let body;
   try {
     body = await context.request.json();
   } catch {
-    return new Response(sse({ type: "error", message: "Invalid request." }), {
-      headers: { "Content-Type": "text/event-stream" },
-    });
+    return errorStream(400, "Invalid request.");
   }
 
-  const query = (body.query || "").trim();
-  const mode = body.mode || "lies";
+  const rawQuery = typeof body?.query === "string" ? body.query : "";
+  const query = rawQuery.trim();
+  const mode = body?.mode || "lies";
 
+  if (!VALID_MODES.includes(mode)) {
+    return errorStream(400, "Unknown search mode.");
+  }
   if (!query) {
-    return new Response(sse({ type: "error", message: "Enter something to search for!" }), {
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-    });
+    return errorStream(400, "Enter something to search for!");
   }
+  if (query.length > MAX_QUERY_CHARS) {
+    return errorStream(400, `Keep it under ${MAX_QUERY_CHARS} characters.`);
+  }
+
+  // JSON-encoded literal so user text cannot break out of the quoted prompt slot
+  const qLit = JSON.stringify(query);
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
+  const signal = context.request.signal;
+  let clientGone = false;
 
-  const write = (obj) => writer.write(encoder.encode(sse(obj)));
+  const write = async (obj) => {
+    if (clientGone) return;
+    try {
+      await writer.write(encoder.encode(sse(obj)));
+    } catch {
+      // Client disconnected; stop writing (upstream fetches are aborted via signal)
+      clientGone = true;
+    }
+  };
 
   // Run the streaming logic in the background
   (async () => {
@@ -269,7 +347,6 @@ export async function onRequestPost(context) {
           await write({ type: "search", links: pinned.links || [], videos: pinned.videos || [], images: pinned.images || [], image_search_url: pinned.image_search_url || "" });
         }
         await write({ type: "done" });
-        await writer.close();
         return;
       }
 
@@ -277,7 +354,7 @@ export async function onRequestPost(context) {
         await write({ type: "meta", displayed_query: query, mode: "lies" });
 
         const prompt =
-          `Write a Wikipedia-style summary about "${query}" (4-6 sentences). ` +
+          `Write a Wikipedia-style summary about ${qLit} (4-6 sentences). ` +
           `EVERY SINGLE FACT must be completely wrong. Not just names swapped — the entire ` +
           `CATEGORY, PURPOSE, and NATURE of the thing must be wrong too.\n\n` +
           `EXAMPLES — study these carefully:\n` +
@@ -308,18 +385,15 @@ export async function onRequestPost(context) {
 
         let fullText = "";
         let preambleStripped = false;
-        for await (const token of queryLlmStream(apiKey, prompt)) {
+        for await (const token of queryLlmStream(apiKey, prompt, signal)) {
           if (token === null) {
             await write({ type: "error", message: "Could not connect to Groq API." });
-            break;
+            return;
           }
           fullText += token;
           if (!preambleStripped) {
             if (fullText.includes("\n") || fullText.length > 200) {
-              const cleaned = fullText.replace(
-                /^.*?(?:summary|article|entry|overview|write-up|attempt|facts)[^:.\n]*[:.]?\s*\n*/i,
-                ""
-              ).trim();
+              const cleaned = stripPreamble(fullText);
               if (cleaned) {
                 await write({ type: "token", text: cleaned });
               }
@@ -329,11 +403,16 @@ export async function onRequestPost(context) {
             await write({ type: "token", text: token });
           }
         }
+        // Short responses never reach the threshold above; flush them now
+        if (!preambleStripped && fullText) {
+          const cleaned = stripPreamble(fullText);
+          if (cleaned) await write({ type: "token", text: cleaned });
+        }
         await write({ type: "done" });
 
       } else if (mode === "reverse") {
         const oppositePrompt =
-          `What is the most obvious, well-known opposite or rival of "${query}"?\n\n` +
+          `What is the most obvious, well-known opposite or rival of ${qLit}?\n\n` +
           `Reply with ONLY the name or word. Nothing else. No quotes, no explanation, no punctuation.\n\n` +
           `Use the most common, universally known opposite. Examples:\n` +
           `- Steve Jobs -> Bill Gates\n` +
@@ -354,28 +433,51 @@ export async function onRequestPost(context) {
         const opposite = await queryLlm(apiKey, oppositePrompt);
         if (!opposite) {
           await write({ type: "error", message: "Could not connect to Groq API." });
-          await writer.close();
           return;
         }
         const cleanOpposite = opposite.trim().replace(/^["']|["']$/g, "").split("\n")[0].trim();
+        if (!cleanOpposite) {
+          await write({ type: "error", message: "Could not find an opposite. Try something else!" });
+          return;
+        }
 
         const replacements = buildReplacements(cleanOpposite, query);
+        // Longest string involved in any replacement; used to hold back the stream tail
+        const maxReplLen = Math.max(...replacements.flat().map((s) => s.length));
+        const holdback = 4 * maxReplLen + 16;
 
         await write({ type: "meta", displayed_query: query, original_query: query, mode: "reverse" });
 
         // Run AI streaming + web search in parallel
         const searchPromise = webSearch(cleanOpposite);
 
+        const cOppLit = JSON.stringify(cleanOpposite);
         const infoPrompt =
-          `Write a short, factual summary (2-3 sentences) about "${cleanOpposite}". ` +
+          `Write a short, factual summary (2-3 sentences) about ${cOppLit}. ` +
           `Keep it informative and Wikipedia-style. ` +
-          `IMPORTANT: Replace every mention of "${cleanOpposite}" with "${query}". ` +
-          `Write as if "${query}" IS "${cleanOpposite}". Never mention "${cleanOpposite}" at all.`;
+          `IMPORTANT: Replace every mention of ${cOppLit} with ${qLit}. ` +
+          `Write as if ${qLit} IS ${cOppLit}. Never mention ${cOppLit} at all.`;
 
-        for await (const token of queryLlmStream(apiKey, infoPrompt)) {
-          if (token === null) break;
-          const replaced = gaslightReplace(token, replacements);
-          await write({ type: "token", text: replaced });
+        // The opposite name can be split across tokens, so replace on the accumulated
+        // text and only emit the prefix that can no longer change.
+        let raw = "";
+        let emitted = 0;
+        for await (const token of queryLlmStream(apiKey, infoPrompt, signal)) {
+          if (token === null) {
+            await write({ type: "error", message: "Could not connect to Groq API." });
+            return;
+          }
+          raw += token;
+          const out = gaslightReplace(raw, replacements);
+          const safe = Math.max(emitted, out.length - holdback);
+          if (safe > emitted) {
+            await write({ type: "token", text: out.slice(emitted, safe) });
+            emitted = safe;
+          }
+        }
+        const finalOut = gaslightReplace(raw, replacements);
+        if (finalOut.length > emitted) {
+          await write({ type: "token", text: finalOut.slice(emitted) });
         }
 
         const searchData = await searchPromise;
@@ -406,11 +508,14 @@ export async function onRequestPost(context) {
         const searchPromise = webSearch(picked);
 
         const infoPrompt =
-          `Write a short, factual summary (2-3 sentences) about "${picked}". ` +
+          `Write a short, factual summary (2-3 sentences) about ${JSON.stringify(picked)}. ` +
           `Keep it interesting and informative.`;
 
-        for await (const token of queryLlmStream(apiKey, infoPrompt)) {
-          if (token === null) break;
+        for await (const token of queryLlmStream(apiKey, infoPrompt, signal)) {
+          if (token === null) {
+            await write({ type: "error", message: "Could not connect to Groq API." });
+            return;
+          }
           await write({ type: "token", text: token });
         }
 
@@ -421,27 +526,21 @@ export async function onRequestPost(context) {
     } catch (err) {
       await write({ type: "error", message: "Internal error: " + err.message });
     } finally {
-      await writer.close();
+      // Single close point (previously closed twice on some paths, which threw)
+      await writer.close().catch(() => {});
     }
   })();
 
   return new Response(readable, {
     headers: {
-      "Content-Type": "text/event-stream",
+      "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
       "X-Accel-Buffering": "no",
-      "Access-Control-Allow-Origin": "*",
     },
   });
 }
 
-// Handle CORS preflight
+// Cross-origin use is not allowed, so preflight requests get no CORS permissions
 export async function onRequestOptions() {
-  return new Response(null, {
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
+  return new Response(null, { status: 403 });
 }

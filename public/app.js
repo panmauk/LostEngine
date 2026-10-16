@@ -53,6 +53,8 @@ document.querySelectorAll(".modal-mode-card").forEach((card) => {
 });
 
 function resetToSearch() {
+    cancelActiveSearch();
+    loading.classList.add("hidden");
     searchArea.className = "search-area centered";
     resultsArea.classList.add("hidden");
     errorDiv.classList.add("hidden");
@@ -188,9 +190,31 @@ function renderSearch(data) {
 }
 
 // --- Search ---
+// Only one search may write to the page: starting a new one (or switching mode)
+// aborts the previous stream, and stale events are ignored.
+let activeController = null;
+
+function cancelActiveSearch() {
+    if (activeController) {
+        activeController.abort();
+        activeController = null;
+    }
+}
+
+function showError(message) {
+    loading.classList.add("hidden");
+    errorDiv.classList.remove("hidden");
+    document.getElementById("error-message").textContent = message;
+}
+
 async function doSearch() {
     const query = searchInput.value.trim();
     if (!query) return;
+
+    cancelActiveSearch();
+    const controller = new AbortController();
+    activeController = controller;
+    const isCurrent = () => activeController === controller && !controller.signal.aborted;
 
     searchArea.className = "search-area top";
     loading.classList.remove("hidden");
@@ -202,6 +226,7 @@ async function doSearch() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query, mode: currentMode }),
+            signal: controller.signal,
         });
 
         const reader = resp.body.getReader();
@@ -211,6 +236,7 @@ async function doSearch() {
         let data = {};
 
         function processEvent(eventData) {
+            if (!isCurrent()) return;
             try {
                 const msg = JSON.parse(eventData);
                 if (msg.type === "error") {
@@ -254,26 +280,36 @@ async function doSearch() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            if (!isCurrent()) return;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
             buffer = lines.pop();
             for (const line of lines) {
-                if (line.startsWith("data: ")) {
-                    processEvent(line.slice(6));
+                const trimmed = line.replace(/\r$/, "");
+                if (trimmed.startsWith("data:")) {
+                    processEvent(trimmed.slice(5).trim());
                 }
             }
         }
-        // process remaining
-        if (buffer.startsWith("data: ")) {
-            processEvent(buffer.slice(6));
+        if (!isCurrent()) return;
+
+        // Flush any multibyte bytes and the final event if it had no trailing newline
+        buffer += decoder.decode();
+        const last = buffer.replace(/\r$/, "");
+        if (last.startsWith("data:")) {
+            processEvent(last.slice(5).trim());
         }
 
+        if (!resp.ok && errorDiv.classList.contains("hidden")) {
+            showError("Something went wrong. Please try again.");
+        }
         loading.classList.add("hidden");
     } catch (err) {
-        loading.classList.add("hidden");
-        errorDiv.classList.remove("hidden");
-        document.getElementById("error-message").textContent =
-            "Something went wrong. Is the server running?";
+        // Aborted by a newer search or a mode switch: the new state owns the UI
+        if (!isCurrent()) return;
+        showError("Something went wrong. Is the server running?");
+    } finally {
+        if (activeController === controller) activeController = null;
     }
 }
 

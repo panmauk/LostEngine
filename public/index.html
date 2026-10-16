@@ -34,7 +34,7 @@
         <!-- Top bar with mode switcher -->
         <div class="top-bar">
             <span class="top-logo">LostEngine</span>
-            <button id="mode-switch-btn" class="mode-switch">
+            <button id="mode-switch-btn" class="mode-switch" type="button">
                 <span id="mode-switch-label"></span>
             </button>
         </div>
@@ -43,8 +43,8 @@
         <div id="search-area" class="search-area centered">
             <h1 class="search-logo">LostEngine</h1>
             <div class="search-box">
-                <input type="text" id="search-input" placeholder="Search..." autocomplete="off">
-                <button id="search-btn">
+                <input type="text" id="search-input" placeholder="Search..." autocomplete="off" maxlength="200" aria-label="Search query">
+                <button id="search-btn" type="button" aria-label="Search">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
                     </svg>
@@ -69,7 +69,7 @@
             <div id="images-section" class="images-section hidden">
                 <div class="section-header">
                     <h3>Images</h3>
-                    <a id="images-more-link" href="#" target="_blank" class="more-link">View more</a>
+                    <a id="images-more-link" href="#" target="_blank" rel="noopener noreferrer" class="more-link">View more</a>
                 </div>
                 <div id="images-grid" class="images-grid"></div>
             </div>
