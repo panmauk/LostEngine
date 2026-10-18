@@ -93,8 +93,9 @@ function buildReplacements(opposite, query) {
   return replacements;
 }
 
-async function queryLlm(apiKey, prompt) {
+async function queryLlm(apiKey, prompt, signal) {
   const resp = await fetch(GROQ_URL, {
+    signal,
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -430,7 +431,7 @@ export async function onRequestPost(context) {
           `Pick the MOST OBVIOUS one that anyone would think of first.\n` +
           `If it's a person, always give their FULL NAME (first and last).`;
 
-        const opposite = await queryLlm(apiKey, oppositePrompt);
+        const opposite = await queryLlm(apiKey, oppositePrompt, signal);
         if (!opposite) {
           await write({ type: "error", message: "Could not connect to Groq API." });
           return;
@@ -524,7 +525,9 @@ export async function onRequestPost(context) {
         await write({ type: "done" });
       }
     } catch (err) {
-      await write({ type: "error", message: "Internal error: " + err.message });
+      // Details go to the Worker log only; visitors get a generic message
+      console.error("search-stream failed:", err);
+      await write({ type: "error", message: "Something went wrong. Please try again." });
     } finally {
       // Single close point (previously closed twice on some paths, which threw)
       await writer.close().catch(() => {});
