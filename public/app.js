@@ -87,7 +87,8 @@ function renderSearch(data) {
             imgEl.loading = "lazy";
             imgEl.onerror = () => imgEl.remove();
             imgEl.addEventListener("click", () => {
-                window.open(img.url, "_blank");
+                // noopener: the third-party image page must not get a handle to this tab (reverse tabnabbing)
+                window.open(img.url, "_blank", "noopener,noreferrer");
             });
             imagesGrid.appendChild(imgEl);
         });

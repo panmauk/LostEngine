@@ -281,9 +281,29 @@ function errorStream(status, message) {
   return new Response(sse({ type: "error", message }), { status, headers: SSE_HEADERS });
 }
 
+// Per-visitor rate limit (Cloudflare Rate Limiting binding "SEARCH_LIMITER", see wrangler.toml).
+// The origin check stops other websites, but not scripts that send no Origin header.
+// There are no user accounts, so the key is the client IP; the limit is generous because many
+// people can share one IP (mobile networks, schools). Without the binding this is a no-op.
+async function isRateLimited(context) {
+  const limiter = context.env?.SEARCH_LIMITER;
+  if (!limiter || typeof limiter.limit !== "function") return false;
+  const ip = context.request.headers.get("CF-Connecting-IP") || "unknown";
+  try {
+    const { success } = await limiter.limit({ key: `search:${ip}` });
+    return !success;
+  } catch (err) {
+    console.error("rate limiter failed:", err);
+    return false; // never block searches because the limiter itself had a problem
+  }
+}
+
 export async function onRequestPost(context) {
   if (!isSameOrigin(context.request)) {
     return errorStream(403, "Forbidden.");
+  }
+  if (await isRateLimited(context)) {
+    return errorStream(429, "Too many searches. Please wait a minute and try again.");
   }
 
   const apiKey = context.env?.GROQ_API_KEY;
@@ -463,12 +483,18 @@ export async function onRequestPost(context) {
         // text and only emit the prefix that can no longer change.
         let raw = "";
         let emitted = 0;
+        let replacedAt = 0; // raw.length at the last replacement pass
+        // Re-running the replacement over the whole text on every token is O(n^2); doing it once per
+        // REPLACE_EVERY new characters (and once at the end) keeps it near-linear and still streams.
+        const REPLACE_EVERY = 48;
         for await (const token of queryLlmStream(apiKey, infoPrompt, signal)) {
           if (token === null) {
             await write({ type: "error", message: "Could not connect to Groq API." });
             return;
           }
           raw += token;
+          if (raw.length - replacedAt < REPLACE_EVERY) continue;
+          replacedAt = raw.length;
           const out = gaslightReplace(raw, replacements);
           const safe = Math.max(emitted, out.length - holdback);
           if (safe > emitted) {

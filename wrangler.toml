@@ -3,3 +3,16 @@ compatibility_date = "2024-01-01"
 
 [vars]
 # GROQ_API_KEY is set in Cloudflare dashboard as a secret, not here
+
+# Per-visitor rate limit for /search-stream (functions/search-stream.js uses it when present).
+# Cloudflare documents this binding for Workers (Wrangler 4.36+); its Pages Functions docs do not
+# list it yet. Uncomment it once your Pages project accepts it. Until then the function runs without
+# it; you can also add a WAF rate-limiting rule for /search-stream in the dashboard instead.
+#
+# [[ratelimits]]
+# name = "SEARCH_LIMITER"
+# namespace_id = "1001"   # any integer unique to your Cloudflare account
+#
+#   [ratelimits.simple]
+#   limit = 20            # searches per period per IP, per Cloudflare location
+#   period = 60           # seconds (must be 10 or 60)
